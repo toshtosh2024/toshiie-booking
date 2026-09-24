@@ -1,0 +1,7 @@
+{
+  "hosting": {
+    "site": "toshiie-booking",
+    "public": "public",
+    "rewrites": [{ "source": "**", "run": { "serviceId": "booking", "region": "asia-northeast1" } }]
+  }
+}
