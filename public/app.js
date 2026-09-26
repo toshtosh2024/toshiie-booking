@@ -212,6 +212,9 @@ $('form').onsubmit = async (e) => {
       return;
     }
     $('doneText').replaceChildren($('sumDate').textContent, Object.assign(document.createElement('span'), { textContent: $('sumTime').textContent }));
+    $('doneNote').textContent = data.mailed
+      ? `確認メールを ${form.elements.email.value} に送信しました。`
+      : 'この画面のスクリーンショットを保存しておくと安心です。';
     $('sheetForm').hidden = true;
     $('sheetDone').hidden = false;
     $('doneClose').focus({ preventScroll: true });

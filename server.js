@@ -1,5 +1,6 @@
 import express from 'express';
 import { GoogleAuth } from 'google-auth-library';
+import nodemailer from 'nodemailer';
 
 // ---- 設定（環境変数で上書き可） ----
 const cfg = {
@@ -19,7 +20,14 @@ const cfg = {
   icsUrls: (process.env.ICS_URLS || '').split(',').map((s) => s.trim()).filter(Boolean),
   icsTtlMs: Number(process.env.ICS_TTL_MIN || 10) * 60000,
   icsIgnore: /^\s*\[休\]/, // 休講は空き扱い
+  smtpHost: process.env.SMTP_HOST || '',
+  smtpPort: Number(process.env.SMTP_PORT || 465),
+  smtpUser: process.env.SMTP_USER || '',
+  smtpPass: process.env.SMTP_PASS || '',
+  mailFrom: process.env.MAIL_FROM || '',
+  mailBcc: process.env.MAIL_BCC || '',
 };
+cfg.mailFrom ||= cfg.smtpUser ? `"${cfg.ownerName}" <${cfg.smtpUser}>` : '';
 
 cfg.durations = Array.from({ length: Math.floor(cfg.maxDuration / cfg.durationStep) }, (_, i) => (i + 1) * cfg.durationStep);
 
@@ -153,6 +161,78 @@ const mockBusy = (() => {
   return out;
 })();
 
+// ---- 予約確認メール（SMTP_HOST 未設定なら送らずログのみ） ----
+const mailer = cfg.smtpHost
+  ? nodemailer.createTransport({
+      host: cfg.smtpHost,
+      port: cfg.smtpPort,
+      secure: cfg.smtpPort === 465,
+      auth: cfg.smtpUser ? { user: cfg.smtpUser, pass: cfg.smtpPass } : undefined,
+    })
+  : null;
+
+const fmtDate = new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
+const fmtTime = new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, hour: '2-digit', minute: '2-digit' });
+const icsTime = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+const icsText = (t) => t.replace(/[\\,;]/g, (c) => '\\' + c).replace(/\r?\n/g, '\\n');
+const mailAddress = (from) => from.match(/<([^>]+)>/)?.[1] || from;
+
+function buildIcs({ uid, s, e, summary, description, organizer, attendee }) {
+  return [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//toshiie-booking//JA', 'METHOD:REQUEST',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${icsTime(new Date())}`,
+    `DTSTART:${icsTime(s)}`,
+    `DTEND:${icsTime(e)}`,
+    `SUMMARY:${icsText(summary)}`,
+    `DESCRIPTION:${icsText(description)}`,
+    `ORGANIZER;CN=${icsText(cfg.ownerName)}:mailto:${organizer}`,
+    `ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:${attendee}`,
+    'STATUS:CONFIRMED',
+    'END:VEVENT', 'END:VCALENDAR',
+  ].join('\r\n');
+}
+
+async function sendConfirmation({ name, email, memo, s, e, dur }) {
+  const when = `${fmtDate.format(s)} ${fmtTime.format(s)}〜${fmtTime.format(e)}`;
+  const text = [
+    `${name} 様`,
+    '',
+    `${cfg.ownerName} との予定の予約を承りました。`,
+    '',
+    `日時: ${when}（${dur}分）`,
+    ...(memo ? ['', 'メモ:', memo] : []),
+    '',
+    '※ このメールは送信専用です。',
+  ].join('\n');
+  const msg = {
+    from: cfg.mailFrom,
+    to: email,
+    bcc: cfg.mailBcc || undefined,
+    subject: `【予約確定】${when} ${cfg.ownerName}`,
+    text,
+    icalEvent: {
+      filename: 'invite.ics',
+      method: 'REQUEST',
+      content: buildIcs({
+        uid: `${s.getTime()}-${Math.random().toString(36).slice(2)}@toshiie-booking`,
+        s, e,
+        summary: `${cfg.ownerName}との予定`,
+        description: memo,
+        organizer: mailAddress(cfg.mailFrom),
+        attendee: email,
+      }),
+    },
+  };
+  if (!mailer) {
+    console.log('[mail] SMTP_HOST 未設定のため送信をスキップ', { to: email, subject: msg.subject });
+    return false;
+  }
+  await mailer.sendMail(msg);
+  return true;
+}
+
 // ---- 簡易レート制限 ----
 const hits = new Map();
 function rateLimit(req, res, next) {
@@ -199,6 +279,7 @@ app.post('/api/book', rateLimit, async (req, res) => {
   if (typeof name !== 'string' || !name.trim() || name.length > 100) return res.status(400).json({ error: 'お名前を入力してください' });
   if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) return res.status(400).json({ error: 'メールアドレスが不正です' });
   const memo = typeof note === 'string' ? note.slice(0, 1000) : '';
+  const who = name.replace(/[\r\n]+/g, ' ').trim();
   const e = new Date(s.getTime() + dur * 60000);
 
   try {
@@ -209,8 +290,8 @@ app.post('/api/book', rateLimit, async (req, res) => {
     if (!valid) return res.status(409).json({ error: 'この枠は埋まってしまいました。別の時間をお選びください。' });
 
     const event = {
-      summary: `【予約】${name.trim()}`,
-      description: `名前: ${name.trim()}\nメール: ${email}\n\n${memo}`,
+      summary: `【予約】${who}`,
+      description: `名前: ${who}\nメール: ${email}\n\n${memo}`,
       start: { dateTime: s.toISOString(), timeZone: cfg.timeZone },
       end: { dateTime: e.toISOString(), timeZone: cfg.timeZone },
     };
@@ -220,7 +301,12 @@ app.post('/api/book', rateLimit, async (req, res) => {
     } else {
       await gcal(`/calendars/${encodeURIComponent(cfg.calendarId)}/events`, event);
     }
-    res.json({ ok: true, start: s.toISOString(), end: e.toISOString() });
+    // メール送信の失敗で予約自体は失敗にしない
+    const mailed = await sendConfirmation({ name: who, email, memo, s, e, dur }).catch((err) => {
+      console.error('confirmation mail failed:', err);
+      return false;
+    });
+    res.json({ ok: true, start: s.toISOString(), end: e.toISOString(), mailed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: '予約に失敗しました' });

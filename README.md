@@ -6,6 +6,7 @@ Google カレンダー（＋任意の ICS フィード）の空き時間から�
 
 - 空き時間は Google Calendar の freeBusy と ICS フィード（例: UTAS の時間割）から算出
 - 予約されるとカレンダーに `【予約】名前` の予定を作成（直前に空きを再確認して二重予約を防止）
+- 予約完了後、予約者に確認メール（カレンダー招待 `.ics` 添付）を SMTP で送信（`SMTP_HOST` 未設定なら送信しない）
 - フロントエンドは Apple Human Interface Guidelines 風のデザイン（ライト / ダーク対応）
 
 ## 構成
@@ -27,6 +28,11 @@ Google カレンダー（＋任意の ICS フィード）の空き時間から�
 | `DURATION_STEP` / `MAX_DURATION` | `30` / `240` | 所要時間の刻みと上限（分） |
 | `DAYS_AHEAD` | `14` | 何日先まで表示するか |
 | `MIN_NOTICE_HOURS` | `0` | 何時間後以降の枠から予約できるか |
+| `SMTP_HOST` | （未設定なら確認メールを送らない） | 確認メールの SMTP サーバー（例: `smtp.gmail.com`） |
+| `SMTP_PORT` | `465` | SMTP ポート（465 は SSL、587 は STARTTLS） |
+| `SMTP_USER` / `SMTP_PASS` | — | SMTP 認証情報（Gmail は[アプリパスワード](https://myaccount.google.com/apppasswords)を使用） |
+| `MAIL_FROM` | `"OWNER_NAME" <SMTP_USER>` | 送信元 |
+| `MAIL_BCC` | — | 控えを送るアドレス（任意） |
 
 ## ローカル実行
 
@@ -42,3 +48,14 @@ gcloud run deploy booking --source . --region asia-northeast1 \
   --service-account <SA_EMAIL> --allow-unauthenticated \
   --set-env-vars CALENDAR_ID=<calendar id>,ICS_URLS=<ics url>
 ```
+
+確認メールを有効にする場合（Gmail の例。パスワードは Secret Manager に置く）:
+
+```sh
+printf '%s' '<アプリパスワード>' | gcloud secrets create smtp-pass --data-file=-
+gcloud run services update booking --region asia-northeast1 \
+  --update-env-vars SMTP_HOST=smtp.gmail.com,SMTP_USER=<gmail address>,MAIL_BCC=<gmail address> \
+  --update-secrets SMTP_PASS=smtp-pass:latest
+```
+
+サービスアカウントに `roles/secretmanager.secretAccessor` が必要です。
