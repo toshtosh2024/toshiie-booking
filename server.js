@@ -1,6 +1,7 @@
 import express from 'express';
 import { GoogleAuth } from 'google-auth-library';
 import nodemailer from 'nodemailer';
+import net from 'node:net';
 
 // ---- 設定（環境変数で上書き可） ----
 const cfg = {
@@ -257,9 +258,26 @@ async function sendConfirmation({ name, email, s, e, dur }) {
 }
 
 // ---- 簡易レート制限 ----
+// X-Forwarded-For の末尾は Cloud Run が付けた直前の接続元。Firebase Hosting 経由だと
+// それは Google のプロキシで、Firebase は利用者の送った XFF を捨てて「利用者,プロキシ」にするので、
+// 末尾が Firebase のプロキシのときだけ 1 つ手前を利用者の IP とみなす
+const firebaseProxies = new net.BlockList();
+firebaseProxies.addSubnet('66.249.64.0', 19);
+firebaseProxies.addSubnet('142.250.0.0', 15);
+firebaseProxies.addSubnet('192.178.0.0', 15);
+firebaseProxies.addSubnet('2001:4860::', 32, 'ipv6');
+function clientIp(req) {
+  const xff = (req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const last = xff.at(-1);
+  if (!last) return req.socket.remoteAddress;
+  const viaFirebase = /Firebase Hosting/.test(req.headers.via || '') && xff.length >= 2 &&
+    firebaseProxies.check(last, net.isIPv6(last) ? 'ipv6' : 'ipv4');
+  return viaFirebase ? xff.at(-2) : last;
+}
+
 const hits = new Map();
 function rateLimit(req, res, next) {
-  const ip = req.headers['x-forwarded-for']?.split(',').at(-1).trim() || req.ip;
+  const ip = clientIp(req);
   const now = Date.now();
   const list = (hits.get(ip) || []).filter((t) => now - t < 3600000);
   if (list.length >= 5) return res.status(429).json({ error: '予約リクエストが多すぎます。しばらくしてからお試しください。' });
