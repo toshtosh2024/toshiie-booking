@@ -162,22 +162,47 @@ const mockBusy = (() => {
 })();
 
 // ---- 予約確認メール（SMTP_HOST 未設定なら送らずログのみ） ----
-const mailer = cfg.smtpHost
+let mailer = cfg.smtpHost
   ? nodemailer.createTransport({
       host: cfg.smtpHost,
       port: cfg.smtpPort,
       secure: cfg.smtpPort === 465,
       auth: cfg.smtpUser ? { user: cfg.smtpUser, pass: cfg.smtpPass } : undefined,
+      // 予約はすでに作成済みなので、SMTP が詰まってもレスポンスを長く待たせない
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
     })
   : null;
+if (mailer && !cfg.mailFrom) {
+  console.warn('[mail] MAIL_FROM も SMTP_USER も未設定のため確認メールを無効化');
+  mailer = null;
+}
 
 const fmtDate = new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
 const fmtTime = new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, hour: '2-digit', minute: '2-digit' });
 const icsTime = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 const icsText = (t) => t.replace(/[\\,;]/g, (c) => '\\' + c).replace(/\r?\n/g, '\\n');
 const mailAddress = (from) => from.match(/<([^>]+)>/)?.[1] || from;
+// RFC 5545: 75 オクテットを超える行は CRLF + 空白で折り返す（UTF-8 の文字境界で切る）
+function foldLine(line) {
+  const out = [];
+  let cur = '', bytes = 0;
+  for (const ch of line) {
+    const n = Buffer.byteLength(ch);
+    if (bytes + n > (out.length ? 74 : 75)) {
+      out.push(cur);
+      cur = '';
+      bytes = 0;
+    }
+    cur += ch;
+    bytes += n;
+  }
+  out.push(cur);
+  return out.join('\r\n ');
+}
 
-function buildIcs({ uid, s, e, summary, description, organizer, attendee }) {
+function buildIcs({ uid, s, e, summary, organizer, attendee }) {
   return [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//toshiie-booking//JA', 'METHOD:REQUEST',
     'BEGIN:VEVENT',
@@ -186,15 +211,15 @@ function buildIcs({ uid, s, e, summary, description, organizer, attendee }) {
     `DTSTART:${icsTime(s)}`,
     `DTEND:${icsTime(e)}`,
     `SUMMARY:${icsText(summary)}`,
-    `DESCRIPTION:${icsText(description)}`,
     `ORGANIZER;CN=${icsText(cfg.ownerName)}:mailto:${organizer}`,
     `ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:${attendee}`,
     'STATUS:CONFIRMED',
     'END:VEVENT', 'END:VCALENDAR',
-  ].join('\r\n');
+  ].map(foldLine).join('\r\n');
 }
 
-async function sendConfirmation({ name, email, memo, s, e, dur }) {
+// 宛先は未検証の入力なので、踏み台にされないよう予約者が自由に書けるメモは載せない
+async function sendConfirmation({ name, email, s, e, dur }) {
   const when = `${fmtDate.format(s)} ${fmtTime.format(s)}〜${fmtTime.format(e)}`;
   const text = [
     `${name} 様`,
@@ -202,7 +227,6 @@ async function sendConfirmation({ name, email, memo, s, e, dur }) {
     `${cfg.ownerName} との予定の予約を承りました。`,
     '',
     `日時: ${when}（${dur}分）`,
-    ...(memo ? ['', 'メモ:', memo] : []),
     '',
     '※ このメールは送信専用です。',
   ].join('\n');
@@ -219,14 +243,13 @@ async function sendConfirmation({ name, email, memo, s, e, dur }) {
         uid: `${s.getTime()}-${Math.random().toString(36).slice(2)}@toshiie-booking`,
         s, e,
         summary: `${cfg.ownerName}との予定`,
-        description: memo,
         organizer: mailAddress(cfg.mailFrom),
         attendee: email,
       }),
     },
   };
-  if (!mailer) {
-    console.log('[mail] SMTP_HOST 未設定のため送信をスキップ', { to: email, subject: msg.subject });
+  if (!mailer || cfg.mock) {
+    console.log('[mail] 送信をスキップ', { to: email, subject: msg.subject });
     return false;
   }
   await mailer.sendMail(msg);
@@ -236,7 +259,7 @@ async function sendConfirmation({ name, email, memo, s, e, dur }) {
 // ---- 簡易レート制限 ----
 const hits = new Map();
 function rateLimit(req, res, next) {
-  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip;
+  const ip = req.headers['x-forwarded-for']?.split(',').at(-1).trim() || req.ip;
   const now = Date.now();
   const list = (hits.get(ip) || []).filter((t) => now - t < 3600000);
   if (list.length >= 5) return res.status(429).json({ error: '予約リクエストが多すぎます。しばらくしてからお試しください。' });
@@ -302,7 +325,7 @@ app.post('/api/book', rateLimit, async (req, res) => {
       await gcal(`/calendars/${encodeURIComponent(cfg.calendarId)}/events`, event);
     }
     // メール送信の失敗で予約自体は失敗にしない
-    const mailed = await sendConfirmation({ name: who, email, memo, s, e, dur }).catch((err) => {
+    const mailed = await sendConfirmation({ name: who, email, s, e, dur }).catch((err) => {
       console.error('confirmation mail failed:', err);
       return false;
     });
