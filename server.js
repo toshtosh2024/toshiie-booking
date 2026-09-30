@@ -180,8 +180,27 @@ if (mailer && !cfg.mailFrom) {
   mailer = null;
 }
 
-const fmtDate = new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
-const fmtTime = new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, hour: '2-digit', minute: '2-digit' });
+const fmtDates = {
+  ja: new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }),
+  en: new Intl.DateTimeFormat('en-US', { timeZone: cfg.timeZone, year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }),
+};
+const fmtTimes = {
+  ja: new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, hour: '2-digit', minute: '2-digit' }),
+  en: new Intl.DateTimeFormat('en-US', { timeZone: cfg.timeZone, hour: 'numeric', minute: '2-digit' }),
+};
+const reqLang = (v) => (v === 'en' ? 'en' : 'ja');
+const MSG = {
+  ja: {
+    tooMany: '予約リクエストが多すぎます。しばらくしてからお試しください。',
+    calFail: 'カレンダーの取得に失敗しました', badSlot: '不正な枠です', nameReq: 'お名前を入力してください',
+    emailBad: 'メールアドレスが不正です', taken: 'この枠は埋まってしまいました。別の時間をお選びください。', bookFail: '予約に失敗しました',
+  },
+  en: {
+    tooMany: 'Too many booking requests. Please try again later.',
+    calFail: 'Failed to load the calendar', badSlot: 'Invalid time slot', nameReq: 'Please enter your name',
+    emailBad: 'Invalid email address', taken: 'That slot has just been taken. Please choose another time.', bookFail: 'Booking failed',
+  },
+};
 const icsTime = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 const icsText = (t) => t.replace(/[\\,;]/g, (c) => '\\' + c).replace(/\r?\n/g, '\\n');
 const mailAddress = (from) => from.match(/<([^>]+)>/)?.[1] || from;
@@ -220,9 +239,20 @@ function buildIcs({ uid, s, e, summary, organizer, attendee }) {
 }
 
 // 宛先は未検証の入力なので、踏み台にされないよう予約者が自由に書けるメモは載せない
-async function sendConfirmation({ name, email, s, e, dur }) {
-  const when = `${fmtDate.format(s)} ${fmtTime.format(s)}〜${fmtTime.format(e)}`;
-  const text = [
+async function sendConfirmation({ name, email, s, e, dur, lang }) {
+  const en = lang === 'en';
+  const when = en
+    ? `${fmtDates.en.format(s)} ${fmtTimes.en.format(s)} – ${fmtTimes.en.format(e)}`
+    : `${fmtDates.ja.format(s)} ${fmtTimes.ja.format(s)}〜${fmtTimes.ja.format(e)}`;
+  const text = (en ? [
+    `Dear ${name},`,
+    '',
+    `Your appointment with ${cfg.ownerName} has been booked.`,
+    '',
+    `Date & time: ${when} (${dur} min, ${cfg.timeZone})`,
+    '',
+    '* This is a send-only email.',
+  ] : [
     `${name} 様`,
     '',
     `${cfg.ownerName} との予定の予約を承りました。`,
@@ -230,12 +260,12 @@ async function sendConfirmation({ name, email, s, e, dur }) {
     `日時: ${when}（${dur}分）`,
     '',
     '※ このメールは送信専用です。',
-  ].join('\n');
+  ]).join('\n');
   const msg = {
     from: cfg.mailFrom,
     to: email,
     bcc: cfg.mailBcc || undefined,
-    subject: `【予約確定】${when} ${cfg.ownerName}`,
+    subject: en ? `[Booking confirmed] ${when} ${cfg.ownerName}` : `【予約確定】${when} ${cfg.ownerName}`,
     text,
     icalEvent: {
       filename: 'invite.ics',
@@ -243,7 +273,7 @@ async function sendConfirmation({ name, email, s, e, dur }) {
       content: buildIcs({
         uid: `${s.getTime()}-${Math.random().toString(36).slice(2)}@toshiie-booking`,
         s, e,
-        summary: `${cfg.ownerName}との予定`,
+        summary: en ? `Meeting with ${cfg.ownerName}` : `${cfg.ownerName}との予定`,
         organizer: mailAddress(cfg.mailFrom),
         attendee: email,
       }),
@@ -280,7 +310,7 @@ function rateLimit(req, res, next) {
   const ip = clientIp(req);
   const now = Date.now();
   const list = (hits.get(ip) || []).filter((t) => now - t < 3600000);
-  if (list.length >= 5) return res.status(429).json({ error: '予約リクエストが多すぎます。しばらくしてからお試しください。' });
+  if (list.length >= 5) return res.status(429).json({ error: MSG[reqLang(req.body?.lang)].tooMany });
   list.push(now);
   hits.set(ip, list);
   next();
@@ -307,18 +337,19 @@ app.get('/api/slots', async (req, res) => {
     res.json({ duration, days: computeSlots(busy, duration, from, to) });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: 'カレンダーの取得に失敗しました' });
+    res.status(500).json({ error: MSG[reqLang(req.query.lang)].calFail });
   }
 });
 
 app.post('/api/book', rateLimit, async (req, res) => {
   const { start, duration, name, email, note, website } = req.body || {};
+  const M = MSG[reqLang(req.body?.lang)];
   if (website) return res.json({ ok: true }); // honeypot
   const dur = Number(duration);
   const s = new Date(start);
-  if (!cfg.durations.includes(dur) || isNaN(s)) return res.status(400).json({ error: '不正な枠です' });
-  if (typeof name !== 'string' || !name.trim() || name.length > 100) return res.status(400).json({ error: 'お名前を入力してください' });
-  if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) return res.status(400).json({ error: 'メールアドレスが不正です' });
+  if (!cfg.durations.includes(dur) || isNaN(s)) return res.status(400).json({ error: M.badSlot });
+  if (typeof name !== 'string' || !name.trim() || name.length > 100) return res.status(400).json({ error: M.nameReq });
+  if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) return res.status(400).json({ error: M.emailBad });
   const memo = typeof note === 'string' ? note.slice(0, 1000) : '';
   const who = name.replace(/[\r\n]+/g, ' ').trim();
   const e = new Date(s.getTime() + dur * 60000);
@@ -328,7 +359,7 @@ app.post('/api/book', rateLimit, async (req, res) => {
     const date = localDate(s);
     const busy = await getBusy(at(date, '00:00'), at(addDays(date, 1), '00:00'));
     const valid = computeSlots(busy, dur, date, date)[0].slots.includes(s.toISOString());
-    if (!valid) return res.status(409).json({ error: 'この枠は埋まってしまいました。別の時間をお選びください。' });
+    if (!valid) return res.status(409).json({ error: M.taken });
 
     const event = {
       summary: `【予約】${who}`,
@@ -343,14 +374,14 @@ app.post('/api/book', rateLimit, async (req, res) => {
       await gcal(`/calendars/${encodeURIComponent(cfg.calendarId)}/events`, event);
     }
     // メール送信の失敗で予約自体は失敗にしない
-    const mailed = await sendConfirmation({ name: who, email, s, e, dur }).catch((err) => {
+    const mailed = await sendConfirmation({ name: who, email, s, e, dur, lang: reqLang(req.body?.lang) }).catch((err) => {
       console.error('confirmation mail failed:', err);
       return false;
     });
     res.json({ ok: true, start: s.toISOString(), end: e.toISOString(), mailed });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: '予約に失敗しました' });
+    res.status(500).json({ error: M.bookFail });
   }
 });
 
