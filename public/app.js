@@ -37,11 +37,11 @@ const I18N = {
     nameReq: 'Please enter your name', emailBad: 'Please enter a valid email address',
     bookFail: 'Booking failed', netFail: 'Network error. Please try again.',
     mailed: (a) => `A confirmation email was sent to ${a}.`,
-    hour: (h) => `${h} hr`, min: (m) => `${m} min`, unit: (d) => `${d} steps`, range: (a, b, u) => `${a} – ${b} · ${u}`,
+    hour: (h) => `${h} hr`, min: (m) => `${m} min`, unit: (d) => `in ${d} increments`, range: (a, b, u) => `${a} – ${b} · ${u}`,
     period: ['Morning', 'Afternoon', 'Evening'],
-    dayAria: (m, d, dow, n) => `${dow}, ${m}/${d}, ${n ? `${n} slots` : 'unavailable'}`,
+    dayAria: (m, d, dow, n) => `${dow}, ${MONTHS_EN[m - 1]} ${d}, ${n ? `${n} ${n === 1 ? 'slot' : 'slots'}` : 'unavailable'}`,
     monthLabel: (y, m1, m2) => m1 === m2 ? `${MONTHS_EN[m1 - 1]} ${y}` : `${MONTHS_EN[m1 - 1]} – ${MONTHS_EN[m2 - 1]} ${y}`,
-    dayLabel: (m, d, dow, n) => `${dow}, ${MONTHS_EN[m - 1]} ${d} · ${n} slots`,
+    dayLabel: (m, d, dow, n) => `${dow}, ${MONTHS_EN[m - 1]} ${d} · ${n} ${n === 1 ? 'slot' : 'slots'}`,
     slotAria: (t, dur) => `${t}, ${dur}`,
   },
 };
@@ -50,16 +50,17 @@ const store = { get: () => { try { return localStorage.getItem('lang'); } catch 
 let lang = store.get() || (navigator.language?.startsWith('ja') ? 'ja' : 'en');
 if (!I18N[lang]) lang = 'ja';
 const t = () => I18N[lang];
-let config, days = [], selectedDate = null, duration, pickedStart = null, lastFocus = null, loadSeq = 0, mailedTo = '';
+let config, days = [], selectedDate = null, duration, pickedStart = null, lastFocus = null, loadSeq = 0, mailedTo = '', statusKey, errKey;
 
 const dtf = (opts) => new Intl.DateTimeFormat(t().locale, { timeZone: config.timeZone, ...opts });
 const fmtTime = (iso) => dtf({ hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
 const localHour = (iso) => Number(dtf({ hour: 'numeric', hourCycle: 'h23' }).format(new Date(iso)).replace(/\D/g, ''));
 const endOf = (iso) => new Date(new Date(iso).getTime() + duration * 60000).toISOString();
 const parts = (date) => date.split('-').map(Number);
-const todayLocal = () => dtf({ year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()).replaceAll('/', '-');
+const todayLocal = () => new Intl.DateTimeFormat('en-CA', { timeZone: config.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 async function init() {
+  applyLang();
   config = await fetch('/api/config').then((r) => r.json());
   duration = config.durations[0];
 
@@ -95,6 +96,8 @@ function applyLang() {
   if (ds.length > 1) $('durRange').textContent = L.range(fmtDur(ds[0]), fmtDur(ds.at(-1)), L.unit(fmtDur(ds[1] - ds[0])));
   renderDuration();
   if (days.length) { renderDays(); renderSlots(); }
+  if (statusKey) $('status').textContent = L[statusKey];
+  if (errKey) $('formError').textContent = L[errKey];
   if (!$('sheet').hidden && pickedStart) fillSummary(pickedStart);
   if (!$('sheetDone').hidden) fillDone();
 }
@@ -136,7 +139,7 @@ async function load() {
   } catch (e) {
     if (seq !== loadSeq) return;
     $('slots').innerHTML = '';
-    showStatus(e.message || t().loadFail);
+    showStatus(e.message || t().loadFail, e.message ? undefined : 'loadFail');
     return;
   }
   if (!days.some((d) => d.date === selectedDate && d.slots.length)) {
@@ -146,7 +149,8 @@ async function load() {
   renderSlots();
 }
 
-function showStatus(text) {
+function showStatus(text, key) {
+  statusKey = key;
   $('status').textContent = text;
   $('status').hidden = false;
 }
@@ -181,7 +185,7 @@ function renderSlots() {
   const day = days.find((d) => d.date === selectedDate);
   if (!day) {
     $('dayLabel').textContent = '';
-    showStatus(t().noSlots);
+    showStatus(t().noSlots, 'noSlots');
     return;
   }
   $('status').hidden = true;
@@ -220,6 +224,7 @@ function openSheet(start) {
   lastFocus = document.activeElement;
   fillSummary(start);
   $('formError').textContent = '';
+  errKey = undefined;
   document.querySelectorAll('.list-row.invalid').forEach((r) => r.classList.remove('invalid'));
   $('sheetForm').hidden = false;
   $('sheetDone').hidden = true;
@@ -270,7 +275,8 @@ $('form').onsubmit = async (e) => {
     if (bad && !firstInvalid) firstInvalid = el;
   }
   if (firstInvalid) {
-    $('formError').textContent = firstInvalid.name === 'name' ? t().nameReq : t().emailBad;
+    errKey = firstInvalid.name === 'name' ? 'nameReq' : 'emailBad';
+    $('formError').textContent = t()[errKey];
     firstInvalid.focus();
     return;
   }
@@ -279,6 +285,7 @@ $('form').onsubmit = async (e) => {
   btn.disabled = true;
   btn.classList.add('loading');
   $('formError').textContent = '';
+  errKey = undefined;
   try {
     const r = await fetch('/api/book', {
       method: 'POST',
@@ -287,6 +294,7 @@ $('form').onsubmit = async (e) => {
     });
     const data = await r.json();
     if (!r.ok) {
+      errKey = data.error ? undefined : 'bookFail';
       $('formError').textContent = data.error || t().bookFail;
       if (r.status === 409) load();
       return;
@@ -299,6 +307,7 @@ $('form').onsubmit = async (e) => {
     form.elements.note.value = '';
     load();
   } catch {
+    errKey = 'netFail';
     $('formError').textContent = t().netFail;
   } finally {
     btn.disabled = false;
