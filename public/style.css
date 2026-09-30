@@ -60,13 +60,13 @@ button { font: inherit; color: inherit; }
 .navbar {
   position: fixed; inset: 0 0 auto; z-index: 10;
   height: calc(44px + env(safe-area-inset-top));
-  padding-top: env(safe-area-inset-top);
+  padding: env(safe-area-inset-top) 104px 0;
   display: grid; place-items: center;
   background: transparent;
   border-bottom: .5px solid transparent;
   transition: background .25s, border-color .25s;
 }
-.navbar-title { font-weight: 600; opacity: 0; transform: translateY(4px); transition: opacity .2s, transform .2s; }
+.navbar-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; opacity: 0; transform: translateY(4px); transition: opacity .2s, transform .2s; }
 .navbar.scrolled {
   background: var(--bar);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
@@ -247,3 +247,14 @@ main {
   *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; transition-duration: .01ms !important; }
   .done-check path { stroke-dashoffset: 0; }
 }
+
+/* ---------- 言語切替 ---------- */
+.lang {
+  position: absolute; top: calc(6px + env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
+  display: inline-flex; padding: 2px; border-radius: 9px; background: var(--fill);
+}
+.lang button {
+  border: 0; background: transparent; padding: 3px 10px; border-radius: 7px;
+  font-size: 13px; font-weight: 600; color: var(--label-2); cursor: pointer;
+}
+.lang button[aria-pressed="true"] { background: var(--blue); color: #fff; }

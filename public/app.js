@@ -1,23 +1,71 @@
 const $ = (id) => document.getElementById(id);
-const DOW = ['日', '月', '火', '水', '木', '金', '土'];
-let config, days = [], selectedDate = null, duration, pickedStart = null, lastFocus = null, loadSeq = 0;
+const I18N = {
+  ja: {
+    locale: 'ja-JP', dow: ['日', '月', '火', '水', '木', '金', '土'],
+    title: 'Toshiieとの日程調整', heading: '日程調整',
+    sub: 'ご都合のよい日時をお選びください。塩見に連絡が行きます',
+    duration: '所要時間', date: '日付', time: '時間',
+    footer: 'カレンダーの空き状況はリアルタイムで反映されます。',
+    cancel: 'キャンセル', confirm: '予約の確認',
+    name: 'お名前', namePh: '山田 太郎', email: 'メール', note: 'メモ（任意）', notePh: 'ご用件など',
+    book: '予約する', doneTitle: '予約が完了しました', doneNote: 'この画面のスクリーンショットを保存しておくと安心です。',
+    sep: '', close: '閉じる', tzJst: '日本時間 (JST)',
+    durMinus: '30分短くする', durPlus: '30分長くする',
+    loadFail: '読み込みに失敗しました', noSlots: '現在予約できる枠がありません',
+    nameReq: 'お名前を入力してください', emailBad: 'メールアドレスを正しく入力してください',
+    bookFail: '予約に失敗しました', netFail: '通信に失敗しました。もう一度お試しください。',
+    mailed: (a) => `確認メールを ${a} に送信しました。`,
+    hour: (h) => `${h}時間`, min: (m) => `${m}分`, unit: (d) => `${d}単位`, range: (a, b, u) => `${a}〜${b}・${u}`,
+    period: ['午前', '午後', '夜'],
+    dayAria: (m, d, dow, n) => `${m}月${d}日 ${dow}曜日 ${n ? `${n}枠` : '空きなし'}`,
+    monthLabel: (y, m1, m2) => m1 === m2 ? `${y}年${m1}月` : `${y}年${m1}月 – ${m2}月`,
+    dayLabel: (m, d, dow, n) => `${m}月${d}日（${dow}）· ${n}枠`,
+    slotAria: (t, dur) => `${t}から${dur}`,
+  },
+  en: {
+    locale: 'en-US', dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+    title: 'Schedule a time with Toshiie', heading: 'Book a time',
+    sub: 'Pick a time that works for you. Toshiie will be notified.',
+    duration: 'Duration', date: 'Date', time: 'Time',
+    footer: 'Calendar availability is updated in real time.',
+    cancel: 'Cancel', confirm: 'Confirm booking',
+    name: 'Name', namePh: 'Jane Smith', email: 'Email', note: 'Note (optional)', notePh: 'Purpose of the meeting, etc.',
+    book: 'Book', doneTitle: 'Booking confirmed', doneNote: 'You may want to save a screenshot of this screen.',
+    sep: ' ', close: 'Close', tzJst: 'Japan Time (JST)',
+    durMinus: 'Shorten by 30 minutes', durPlus: 'Extend by 30 minutes',
+    loadFail: 'Failed to load', noSlots: 'No time slots are currently available',
+    nameReq: 'Please enter your name', emailBad: 'Please enter a valid email address',
+    bookFail: 'Booking failed', netFail: 'Network error. Please try again.',
+    mailed: (a) => `A confirmation email was sent to ${a}.`,
+    hour: (h) => `${h} hr`, min: (m) => `${m} min`, unit: (d) => `in ${d} increments`, range: (a, b, u) => `${a} – ${b} · ${u}`,
+    period: ['Morning', 'Afternoon', 'Evening'],
+    dayAria: (m, d, dow, n) => `${dow}, ${MONTHS_EN[m - 1]} ${d}, ${n ? `${n} ${n === 1 ? 'slot' : 'slots'}` : 'unavailable'}`,
+    monthLabel: (y, m1, m2) => m1 === m2 ? `${MONTHS_EN[m1 - 1]} ${y}` : `${MONTHS_EN[m1 - 1]} – ${MONTHS_EN[m2 - 1]} ${y}`,
+    dayLabel: (m, d, dow, n) => `${dow}, ${MONTHS_EN[m - 1]} ${d} · ${n} ${n === 1 ? 'slot' : 'slots'}`,
+    slotAria: (t, dur) => `${t}, ${dur}`,
+  },
+};
+const MONTHS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const store = { get: () => { try { return localStorage.getItem('lang'); } catch { return null; } }, set: (v) => { try { localStorage.setItem('lang', v); } catch {} } };
+let lang = store.get() || (navigator.language?.startsWith('ja') ? 'ja' : 'en');
+if (!I18N[lang]) lang = 'ja';
+const t = () => I18N[lang];
+let config, days = [], selectedDate = null, duration, pickedStart = null, lastFocus = null, loadSeq = 0, mailedTo = '', statusKey, errKey;
 
-const dtf = (opts) => new Intl.DateTimeFormat('ja-JP', { timeZone: config.timeZone, ...opts });
+const dtf = (opts) => new Intl.DateTimeFormat(t().locale, { timeZone: config.timeZone, ...opts });
 const fmtTime = (iso) => dtf({ hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
 const localHour = (iso) => Number(dtf({ hour: 'numeric', hourCycle: 'h23' }).format(new Date(iso)).replace(/\D/g, ''));
 const endOf = (iso) => new Date(new Date(iso).getTime() + duration * 60000).toISOString();
 const parts = (date) => date.split('-').map(Number);
-const todayLocal = () => dtf({ year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()).replaceAll('/', '-');
+const todayLocal = () => new Intl.DateTimeFormat('en-CA', { timeZone: config.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 async function init() {
+  applyLang();
   config = await fetch('/api/config').then((r) => r.json());
-  $('owner').textContent = config.ownerName;
-  $('tz').textContent = config.timeZone === 'Asia/Tokyo' ? '日本時間 (JST)' : config.timeZone;
   duration = config.durations[0];
 
   if (config.durations.length < 2) $('durLabel').closest('.section').hidden = true;
   const ds = config.durations;
-  if (ds.length > 1) $('durRange').textContent = `${fmtDur(ds[0])}〜${fmtDur(ds.at(-1))}・${fmtDur(ds[1] - ds[0])}単位`;
   const step = (dir) => {
     const next = ds[ds.indexOf(duration) + dir];
     if (next === undefined) return;
@@ -28,13 +76,39 @@ async function init() {
   };
   $('durMinus').onclick = () => step(-1);
   $('durPlus').onclick = () => step(1);
-  renderDuration();
+  applyLang();
   load();
+}
+
+function applyLang() {
+  const L = t();
+  document.documentElement.lang = lang;
+  for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = L[el.dataset.i18n];
+  for (const el of document.querySelectorAll('[data-i18n-ph]')) el.placeholder = L[el.dataset.i18nPh];
+  document.title = L.title;
+  for (const b of document.querySelectorAll('#lang button')) b.setAttribute('aria-pressed', String(b.dataset.lang === lang));
+  if (!config) return;
+  const ds = config.durations;
+  $('owner').textContent = config.ownerName;
+  $('tz').textContent = config.timeZone === 'Asia/Tokyo' ? L.tzJst : config.timeZone;
+  $('durMinus').setAttribute('aria-label', L.durMinus);
+  $('durPlus').setAttribute('aria-label', L.durPlus);
+  if (ds.length > 1) $('durRange').textContent = L.range(fmtDur(ds[0]), fmtDur(ds.at(-1)), L.unit(fmtDur(ds[1] - ds[0])));
+  renderDuration();
+  if (days.length) { renderDays(); renderSlots(); }
+  if (statusKey) $('status').textContent = L[statusKey];
+  if (errKey) $('formError').textContent = L[errKey];
+  if (!$('sheet').hidden && pickedStart) fillSummary(pickedStart);
+  if (!$('sheetDone').hidden) fillDone();
+}
+
+for (const b of document.querySelectorAll('#lang button')) {
+  b.onclick = () => { lang = b.dataset.lang; store.set(lang); applyLang(); };
 }
 
 const fmtDur = (min) => {
   const h = Math.floor(min / 60), m = min % 60;
-  return h ? `${h}時間${m ? `${m}分` : ''}` : `${m}分`;
+  return h ? [t().hour(h), m && t().min(m)].filter(Boolean).join(t().sep) : t().min(m);
 };
 let stepTimer;
 
@@ -57,7 +131,7 @@ async function load() {
   $('status').hidden = true;
   $('slots').innerHTML = `<div class="slot-grid">${'<div class="skeleton"></div>'.repeat(8)}</div>`;
   try {
-    const r = await fetch(`/api/slots?duration=${duration}`);
+    const r = await fetch(`/api/slots?duration=${duration}&lang=${lang}`);
     const data = await r.json();
     if (!r.ok) throw new Error(data.error);
     if (seq !== loadSeq) return;
@@ -65,7 +139,7 @@ async function load() {
   } catch (e) {
     if (seq !== loadSeq) return;
     $('slots').innerHTML = '';
-    showStatus(e.message || '読み込みに失敗しました');
+    showStatus(e.message || t().loadFail, e.message ? undefined : 'loadFail');
     return;
   }
   if (!days.some((d) => d.date === selectedDate && d.slots.length)) {
@@ -75,7 +149,8 @@ async function load() {
   renderSlots();
 }
 
-function showStatus(text) {
+function showStatus(text, key) {
+  statusKey = key;
   $('status').textContent = text;
   $('status').hidden = false;
 }
@@ -92,8 +167,8 @@ function renderDays() {
     b.disabled = !d.slots.length;
     b.setAttribute('role', 'option');
     b.setAttribute('aria-selected', String(d.date === selectedDate));
-    b.setAttribute('aria-label', `${m}月${day}日 ${DOW[d.weekday]}曜日 ${d.slots.length ? `${d.slots.length}枠` : '空きなし'}`);
-    b.innerHTML = `<span class="date-dow">${DOW[d.weekday]}</span><span class="date-num">${day}</span><span class="date-dot"></span>`;
+    b.setAttribute('aria-label', t().dayAria(m, day, t().dow[d.weekday], d.slots.length));
+    b.innerHTML = `<span class="date-dow">${t().dow[d.weekday]}</span><span class="date-num">${day}</span><span class="date-dot"></span>`;
     b.onclick = () => { selectedDate = d.date; renderDays(); renderSlots(); };
     wrap.append(b);
   }
@@ -101,7 +176,7 @@ function renderDays() {
   if (sel) wrap.scrollTo({ left: Math.max(0, sel.offsetLeft - wrap.clientWidth / 2 + sel.clientWidth / 2), behavior: 'smooth' });
 
   const first = parts(days[0].date), last = parts(days.at(-1).date);
-  $('monthLabel').textContent = first[1] === last[1] ? `${first[0]}年${first[1]}月` : `${first[0]}年${first[1]}月 – ${last[1]}月`;
+  $('monthLabel').textContent = t().monthLabel(first[0], first[1], last[1]);
 }
 
 function renderSlots() {
@@ -110,17 +185,17 @@ function renderSlots() {
   const day = days.find((d) => d.date === selectedDate);
   if (!day) {
     $('dayLabel').textContent = '';
-    showStatus('現在予約できる枠がありません');
+    showStatus(t().noSlots, 'noSlots');
     return;
   }
   $('status').hidden = true;
   const [, m, d] = parts(day.date);
-  $('dayLabel').textContent = `${m}月${d}日（${DOW[day.weekday]}）· ${day.slots.length}枠`;
+  $('dayLabel').textContent = t().dayLabel(m, d, t().dow[day.weekday], day.slots.length);
 
   const groups = [
-    ['午前', day.slots.filter((s) => localHour(s) < 12)],
-    ['午後', day.slots.filter((s) => localHour(s) >= 12 && localHour(s) < 18)],
-    ['夜', day.slots.filter((s) => localHour(s) >= 18)],
+    [t().period[0], day.slots.filter((s) => localHour(s) < 12)],
+    [t().period[1], day.slots.filter((s) => localHour(s) >= 12 && localHour(s) < 18)],
+    [t().period[2], day.slots.filter((s) => localHour(s) >= 18)],
   ];
   let i = 0;
   for (const [title, slots] of groups) {
@@ -135,7 +210,7 @@ function renderSlots() {
       b.className = 'slot';
       b.style.animationDelay = `${Math.min(i++, 12) * 18}ms`;
       b.textContent = fmtTime(s);
-      b.setAttribute('aria-label', `${fmtTime(s)}から${fmtDur(duration)}`);
+      b.setAttribute('aria-label', t().slotAria(fmtTime(s), fmtDur(duration)));
       b.onclick = () => openSheet(s);
       grid.append(b);
     }
@@ -147,12 +222,9 @@ function renderSlots() {
 function openSheet(start) {
   pickedStart = start;
   lastFocus = document.activeElement;
-  const d = new Date(start);
-  $('sumMonth').textContent = dtf({ month: 'short' }).format(d);
-  $('sumDay').textContent = dtf({ day: 'numeric' }).format(d).replace(/\D/g, '');
-  $('sumDate').textContent = dtf({ year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(d);
-  $('sumTime').textContent = `${fmtTime(start)} – ${fmtTime(endOf(start))}（${fmtDur(duration)}）`;
+  fillSummary(start);
   $('formError').textContent = '';
+  errKey = undefined;
   document.querySelectorAll('.list-row.invalid').forEach((r) => r.classList.remove('invalid'));
   $('sheetForm').hidden = false;
   $('sheetDone').hidden = true;
@@ -164,6 +236,19 @@ function openSheet(start) {
   $('backdrop').classList.add('open');
   $('sheet').classList.add('open');
   setTimeout(() => $('form').elements.name.focus({ preventScroll: true }), 350);
+}
+
+function fillSummary(start) {
+  const d = new Date(start);
+  $('sumMonth').textContent = dtf({ month: 'short' }).format(d);
+  $('sumDay').textContent = dtf({ day: 'numeric' }).format(d).replace(/\D/g, '');
+  $('sumDate').textContent = dtf({ year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(d);
+  $('sumTime').textContent = `${fmtTime(start)} – ${fmtTime(endOf(start))} (${fmtDur(duration)})`;
+}
+
+function fillDone() {
+  $('doneText').replaceChildren($('sumDate').textContent, Object.assign(document.createElement('span'), { textContent: $('sumTime').textContent }));
+  $('doneNote').textContent = mailedTo ? t().mailed(mailedTo) : t().doneNote;
 }
 
 function closeSheet() {
@@ -190,7 +275,8 @@ $('form').onsubmit = async (e) => {
     if (bad && !firstInvalid) firstInvalid = el;
   }
   if (firstInvalid) {
-    $('formError').textContent = firstInvalid.name === 'name' ? 'お名前を入力してください' : 'メールアドレスを正しく入力してください';
+    errKey = firstInvalid.name === 'name' ? 'nameReq' : 'emailBad';
+    $('formError').textContent = t()[errKey];
     firstInvalid.focus();
     return;
   }
@@ -199,29 +285,30 @@ $('form').onsubmit = async (e) => {
   btn.disabled = true;
   btn.classList.add('loading');
   $('formError').textContent = '';
+  errKey = undefined;
   try {
     const r = await fetch('/api/book', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...Object.fromEntries(new FormData(form)), start: pickedStart, duration }),
+      body: JSON.stringify({ ...Object.fromEntries(new FormData(form)), start: pickedStart, duration, lang }),
     });
     const data = await r.json();
     if (!r.ok) {
-      $('formError').textContent = data.error || '予約に失敗しました';
+      errKey = data.error ? undefined : 'bookFail';
+      $('formError').textContent = data.error || t().bookFail;
       if (r.status === 409) load();
       return;
     }
-    $('doneText').replaceChildren($('sumDate').textContent, Object.assign(document.createElement('span'), { textContent: $('sumTime').textContent }));
-    $('doneNote').textContent = data.mailed
-      ? `確認メールを ${form.elements.email.value} に送信しました。`
-      : 'この画面のスクリーンショットを保存しておくと安心です。';
+    mailedTo = data.mailed ? form.elements.email.value : '';
+    fillDone();
     $('sheetForm').hidden = true;
     $('sheetDone').hidden = false;
     $('doneClose').focus({ preventScroll: true });
     form.elements.note.value = '';
     load();
   } catch {
-    $('formError').textContent = '通信に失敗しました。もう一度お試しください。';
+    errKey = 'netFail';
+    $('formError').textContent = t().netFail;
   } finally {
     btn.disabled = false;
     btn.classList.remove('loading');
