@@ -180,15 +180,12 @@ if (mailer && !cfg.mailFrom) {
   mailer = null;
 }
 
-const fmtDates = {
-  ja: new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }),
-  en: new Intl.DateTimeFormat('en-US', { timeZone: cfg.timeZone, year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }),
-};
-const fmtTimes = {
-  ja: new Intl.DateTimeFormat('ja-JP', { timeZone: cfg.timeZone, hour: '2-digit', minute: '2-digit' }),
-  en: new Intl.DateTimeFormat('en-US', { timeZone: cfg.timeZone, hour: 'numeric', minute: '2-digit' }),
-};
+// 予約者が画面で選んだ表示タイムゾーン（メールの日時表記に使う）
+const viewTimeZones = { 'Asia/Tokyo': { ja: '日本時間', en: 'Japan Time' }, 'Europe/Berlin': { ja: 'ドイツ時間', en: 'Germany Time' } };
+const fmtDate = (lang, timeZone) => new Intl.DateTimeFormat(lang === 'en' ? 'en-US' : 'ja-JP', { timeZone, year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
+const fmtTime = (lang, timeZone) => new Intl.DateTimeFormat(lang === 'en' ? 'en-US' : 'ja-JP', lang === 'en' ? { timeZone, hour: 'numeric', minute: '2-digit' } : { timeZone, hour: '2-digit', minute: '2-digit' });
 const reqLang = (v) => (v === 'en' ? 'en' : 'ja');
+const reqTz = (v) => (Object.hasOwn(viewTimeZones, v) ? v : cfg.timeZone);
 const MSG = {
   ja: {
     tooMany: '予約リクエストが多すぎます。しばらくしてからお試しください。',
@@ -239,17 +236,19 @@ function buildIcs({ uid, s, e, summary, organizer, attendee }) {
 }
 
 // 宛先は未検証の入力なので、踏み台にされないよう予約者が自由に書けるメモは載せない
-async function sendConfirmation({ name, email, s, e, dur, lang }) {
+async function sendConfirmation({ name, email, s, e, dur, lang, tz }) {
   const en = lang === 'en';
+  const d = fmtDate(lang, tz), t = fmtTime(lang, tz);
+  const tzName = viewTimeZones[tz]?.[lang] || tz;
   const when = en
-    ? `${fmtDates.en.format(s)} ${fmtTimes.en.format(s)} – ${fmtTimes.en.format(e)}`
-    : `${fmtDates.ja.format(s)} ${fmtTimes.ja.format(s)}〜${fmtTimes.ja.format(e)}`;
+    ? `${d.format(s)} ${t.format(s)} – ${t.format(e)}`
+    : `${d.format(s)} ${t.format(s)}〜${t.format(e)}`;
   const text = (en ? [
     `Dear ${name},`,
     '',
     `Your appointment with ${cfg.ownerName} has been booked.`,
     '',
-    `Date & time: ${when} (${dur} min, ${cfg.timeZone})`,
+    `Date & time: ${when} (${dur} min, ${tzName})`,
     '',
     '* This is a send-only email.',
   ] : [
@@ -257,7 +256,7 @@ async function sendConfirmation({ name, email, s, e, dur, lang }) {
     '',
     `${cfg.ownerName} との予定の予約を承りました。`,
     '',
-    `日時: ${when}（${dur}分）`,
+    `日時: ${when}（${dur}分・${tzName}）`,
     '',
     '※ このメールは送信専用です。',
   ]).join('\n');
@@ -374,7 +373,7 @@ app.post('/api/book', rateLimit, async (req, res) => {
       await gcal(`/calendars/${encodeURIComponent(cfg.calendarId)}/events`, event);
     }
     // メール送信の失敗で予約自体は失敗にしない
-    const mailed = await sendConfirmation({ name: who, email, s, e, dur, lang: reqLang(req.body?.lang) }).catch((err) => {
+    const mailed = await sendConfirmation({ name: who, email, s, e, dur, lang: reqLang(req.body?.lang), tz: reqTz(req.body?.tz) }).catch((err) => {
       console.error('confirmation mail failed:', err);
       return false;
     });

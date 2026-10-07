@@ -87,6 +87,10 @@ main {
 .hero-sub { margin: 6px 0 0; color: var(--label-2); }
 .meta { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 14px 0 0; padding: 0; color: var(--label-2); font-size: 15px; }
 .meta li { display: inline-flex; align-items: center; gap: 6px; }
+.tz-select {
+  appearance: none; border: 0; margin: 0; padding: 2px 22px 2px 8px; border-radius: 7px; cursor: pointer;
+  font: inherit; color: var(--blue); background: var(--fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23007aff' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 6px center / 10px;
+}
 .meta svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 
 /* ---------- セクション ---------- */

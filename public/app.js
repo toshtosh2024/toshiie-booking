@@ -9,7 +9,7 @@ const I18N = {
     cancel: 'キャンセル', confirm: '予約の確認',
     name: 'お名前', namePh: '山田 太郎', email: 'メール', note: 'メモ（任意）', notePh: 'ご用件など',
     book: '予約する', doneTitle: '予約が完了しました', doneNote: 'この画面のスクリーンショットを保存しておくと安心です。',
-    sep: '', close: '閉じる', tzJst: '日本時間 (JST)',
+    sep: '', close: '閉じる', tzJst: '日本時間 (JST)', tzBerlin: 'ドイツ時間 (CET/CEST)', tzLabel: 'タイムゾーン',
     durMinus: '30分短くする', durPlus: '30分長くする',
     loadFail: '読み込みに失敗しました', noSlots: '現在予約できる枠がありません',
     nameReq: 'お名前を入力してください', emailBad: 'メールアドレスを正しく入力してください',
@@ -31,7 +31,7 @@ const I18N = {
     cancel: 'Cancel', confirm: 'Confirm booking',
     name: 'Name', namePh: 'Jane Smith', email: 'Email', note: 'Note (optional)', notePh: 'Purpose of the meeting, etc.',
     book: 'Book', doneTitle: 'Booking confirmed', doneNote: 'You may want to save a screenshot of this screen.',
-    sep: ' ', close: 'Close', tzJst: 'Japan Time (JST)',
+    sep: ' ', close: 'Close', tzJst: 'Japan Time (JST)', tzBerlin: 'Germany Time (CET/CEST)', tzLabel: 'Time zone',
     durMinus: 'Shorten by 30 minutes', durPlus: 'Extend by 30 minutes',
     loadFail: 'Failed to load', noSlots: 'No time slots are currently available',
     nameReq: 'Please enter your name', emailBad: 'Please enter a valid email address',
@@ -46,18 +46,35 @@ const I18N = {
   },
 };
 const MONTHS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const store = { get: () => { try { return localStorage.getItem('lang'); } catch { return null; } }, set: (v) => { try { localStorage.setItem('lang', v); } catch {} } };
-let lang = store.get() || (navigator.language?.startsWith('ja') ? 'ja' : 'en');
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+let lang = store.get('lang') || (navigator.language?.startsWith('ja') ? 'ja' : 'en');
 if (!I18N[lang]) lang = 'ja';
 const t = () => I18N[lang];
-let config, days = [], selectedDate = null, duration, pickedStart = null, lastFocus = null, loadSeq = 0, mailedTo = '', statusKey, errKey;
+// 表示用タイムゾーン（空き枠の計算はサーバー側の日本時間のまま）
+const TIME_ZONES = ['Asia/Tokyo', 'Europe/Berlin'];
+let viewTz = store.get('tz');
+if (!TIME_ZONES.includes(viewTz)) viewTz = TIME_ZONES[0];
+let config, rawDays = [], days = [], selectedDate = null, duration, pickedStart = null, lastFocus = null, loadSeq = 0, mailedTo = '', statusKey, errKey;
 
-const dtf = (opts) => new Intl.DateTimeFormat(t().locale, { timeZone: config.timeZone, ...opts });
+const dtf = (opts) => new Intl.DateTimeFormat(t().locale, { timeZone: viewTz, ...opts });
 const fmtTime = (iso) => dtf({ hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
 const localHour = (iso) => Number(dtf({ hour: 'numeric', hourCycle: 'h23' }).format(new Date(iso)).replace(/\D/g, ''));
 const endOf = (iso) => new Date(new Date(iso).getTime() + duration * 60000).toISOString();
 const parts = (date) => date.split('-').map(Number);
-const todayLocal = () => new Intl.DateTimeFormat('en-CA', { timeZone: config.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+const todayLocal = () => new Intl.DateTimeFormat('en-CA', { timeZone: viewTz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+// サーバーは日本時間の日付で枠を返すので、表示タイムゾーンの日付で並べ直す
+function regroup(raw) {
+  const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: viewTz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const byDate = new Map(raw.map((d) => [d.date, []]));
+  for (const s of raw.flatMap((d) => d.slots)) {
+    const date = ymd.format(new Date(s));
+    if (!byDate.has(date)) byDate.set(date, []);
+    byDate.get(date).push(s);
+  }
+  return [...byDate].sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([date, slots]) => ({ date, weekday: new Date(`${date}T00:00:00Z`).getUTCDay(), slots }));
+}
 
 async function init() {
   applyLang();
@@ -90,7 +107,7 @@ function applyLang() {
   if (!config) return;
   const ds = config.durations;
   $('owner').textContent = config.ownerName;
-  $('tz').textContent = config.timeZone === 'Asia/Tokyo' ? L.tzJst : config.timeZone;
+  $('tz').setAttribute('aria-label', L.tzLabel);
   $('durMinus').setAttribute('aria-label', L.durMinus);
   $('durPlus').setAttribute('aria-label', L.durPlus);
   if (ds.length > 1) $('durRange').textContent = L.range(fmtDur(ds[0]), fmtDur(ds.at(-1)), L.unit(fmtDur(ds[1] - ds[0])));
@@ -103,8 +120,19 @@ function applyLang() {
 }
 
 for (const b of document.querySelectorAll('#lang button')) {
-  b.onclick = () => { lang = b.dataset.lang; store.set(lang); applyLang(); };
+  b.onclick = () => { lang = b.dataset.lang; store.set('lang', lang); applyLang(); };
 }
+
+$('tz').value = viewTz;
+$('tz').onchange = (e) => {
+  viewTz = e.target.value;
+  store.set('tz', viewTz);
+  if (!rawDays.length) return;
+  days = regroup(rawDays);
+  if (!days.some((d) => d.date === selectedDate && d.slots.length)) selectedDate = days.find((d) => d.slots.length)?.date ?? null;
+  renderDays();
+  renderSlots();
+};
 
 const fmtDur = (min) => {
   const h = Math.floor(min / 60), m = min % 60;
@@ -135,7 +163,8 @@ async function load() {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error);
     if (seq !== loadSeq) return;
-    days = data.days;
+    rawDays = data.days;
+    days = regroup(rawDays);
   } catch (e) {
     if (seq !== loadSeq) return;
     $('slots').innerHTML = '';
@@ -290,7 +319,7 @@ $('form').onsubmit = async (e) => {
     const r = await fetch('/api/book', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...Object.fromEntries(new FormData(form)), start: pickedStart, duration, lang }),
+      body: JSON.stringify({ ...Object.fromEntries(new FormData(form)), start: pickedStart, duration, lang, tz: viewTz }),
     });
     const data = await r.json();
     if (!r.ok) {
